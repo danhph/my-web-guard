@@ -1,167 +1,168 @@
 'use strict';
 
-function myWebGuard() {
-    const monitor = {
-        method: function (object, methodName, policy) {
-            while (!Object.prototype.hasOwnProperty.call(object, methodName) && object.__proto__)
-                object = object.__proto__;
-            if (object === null) {
-                throw new Error('Failed to find function for alias ' + methodName);
-            }
-            const method = object[methodName];
-            if (method === null || method === undefined)
-                throw new Error('No method ' + methodName + ' found for ' + object);
-
-            method.apply = Function.prototype.apply;
-            object[methodName] = function () {
-                const obj = this;
-                const args = arguments;
-                const proceed = function () {
-                    return method.apply(obj, args);
-                };
-                return policy(obj, args, proceed);
-            };
-        },
-        property: function (prototype, propertyName, policies) {
-            while (!Object.prototype.hasOwnProperty.call(prototype, propertyName) && prototype.__proto__)
-                prototype = prototype.__proto__;
-            if (prototype === null) {
-                throw new Error('Failed to find function for alias ' + propertyName);
-            }
-            const descriptor = Object.getOwnPropertyDescriptor(prototype, propertyName);
-            if (descriptor === null || descriptor === undefined)
-                throw new Error('No descriptor ' + propertyName + ' found for ' + prototype);
-
-            const wrapper = {
-                get: function () {
-                    const obj = this;
-                    const args = arguments;
-                    const proceed = function () {
-                        return descriptor.get.call(obj);
-                    };
-                    if (!policies.hasOwnProperty('get'))
-                        return proceed();
-                    return policies.get(obj, args, proceed);
-
-                },
-                set: function () {
-                    const obj = this;
-                    const args = arguments;
-                    const proceed = function () {
-                        return descriptor.set.call(obj, args[0]);
-                    };
-                    if (!policies.hasOwnProperty('set'))
-                        return proceed();
-                    return policies.set(obj, args, proceed);
-                }
-            };
-            for (let key in descriptor) {
-                if (!wrapper.hasOwnProperty(key)) {
-                    wrapper[key] = descriptor[key];
-                }
-            }
-            Object.defineProperty(prototype, propertyName, wrapper);
-        }
-    };
-    const utils = {
-        printDebug: function () {
-            console.log('[MyWebGuard]', ...arguments);
-        },
-        getCodeOrigin: function () {
-            const urls = new Error().stack.match(/https?:\/\/[^:]+/g);
-            return urls === null ? undefined : new URL(urls[urls.length - 1]);
-        },
-        isCrossOrigin: function (url) {
-            try {
-                const topOrigin = window.top.origin;
-                const origin = new URL(url).origin;
-                return topOrigin != origin;
-            }
-            catch {
-                return false;
-            }
-        },
-        isOriginBlocked: function (url) {
-            try {
-                const topOrigin = window.top.origin;
-                const origin = new URL(url).origin;
-                return topOrigin != origin;
-            }
-            catch {
-                return false;
-            }
-        }
-    };
-
-    // let json = window.atob('JSON_RULES');
-    // let rules = JSON.parse(json);
-
-    monitor.property(HTMLImageElement.prototype, 'src', {
-        set: function (obj, args, proceed) {
-            const val = args[0];
-            if (!utils.isCrossOrigin(val))
-                return proceed();
-
-            const codeOrigin = utils.getCodeOrigin().origin;
-            if (!utils.isOriginBlocked(codeOrigin))
-                return proceed();
-
-            // utils.printDebug('[HTMLImageElement.prototype.src]', 'Blocked code execution from', codeOrigin);
-        }
-    });
-    monitor.property(HTMLScriptElement.prototype, 'src', {
-        set: function (obj, args, proceed) {
-            const val = args[0];
-            if (!utils.isCrossOrigin(val))
-                return proceed();
-
-            const codeOrigin = utils.getCodeOrigin().origin;
-            if (!utils.isOriginBlocked(codeOrigin))
-                return proceed();
-
-            // utils.printDebug('[HTMLScriptElement.prototype.src]', 'Blocked code execution from', codeOrigin);
-        }
-    });
-    monitor.method(Element.prototype, 'setAttribute', function (obj, args, proceed) {
-        let block = false;
-        try {
-            const key = args[0].toString();
-            const val = args[1].toString();
-            if (key.toLowerCase() === 'src' && utils.isCrossOrigin(val)) {
-                const codeOrigin = utils.getCodeOrigin().origin;
-                if (utils.isOriginBlocked(codeOrigin)) {
-                    block = true;
-                }
-            }
-        }
-        catch { }
-
-        if (!block)
-            return proceed();
-
-        // utils.printDebug('[Element.prototype.setAttribute]', 'Blocked code execution from', codeOrigin);
-    });
-    monitor.method(document, "createElement", function (obj, args, proceed) {
-        const codeOrigin = utils.getCodeOrigin().origin;
-        if (!utils.isOriginBlocked(codeOrigin)) {
-            return proceed();
-        }
-
-        // utils.printDebug('[document.createElement]', 'Blocked code execution from', codeOrigin);
-    });
+let isTopFrame = false;
+try {
+    window.top.origin;
+    isTopFrame = window === window.top;
 }
+catch {
+    isTopFrame = true;
+}
+const topOrigin = isTopFrame ? window.origin : window.top.origin;
+
+const utils = {
+    printVerbose: function () {
+        console.log('[MyWebGuard]', ...arguments);
+    },
+    sleep: function (ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    },
+    promisify: function (thisArg, fnName) {
+        const fn = thisArg[fnName];
+        return function () {
+            return new Promise((resolve, reject) => {
+                fn.call(thisArg, ...arguments, function () {
+                    const lastError = chrome.runtime.lastError;
+                    if (lastError instanceof Object) {
+                        return reject(lastError.message);
+                    }
+                    resolve(...arguments);
+                });
+            });
+        };
+    },
+    getDefaultRules: function () {
+        let rules = {
+            origins: {}
+        };
+        rules.origins[topOrigin] = false;
+        return rules;
+    },
+    inIFrame: function () {
+        try {
+            window.top.origin;
+            return false;
+        }
+        catch { // iframe 
+            return true;
+        }
+    },
+    getIFrameRules: function () {
+        let rules = {
+            origins: {}
+        };
+        rules.origins[window.origin] = true;
+        return rules;
+    },
+};
+const apis = {
+    chromeStorage: {
+        getItem: async function (key) {
+            let bin;
+            try {
+                bin = await utils.promisify(chrome.storage.local, 'get')(key);
+            } catch (ex) {
+            }
+            return bin instanceof Object ? bin[key] : null;
+        },
+        setItem: async function (key, value) {
+            let bin = {};
+            bin[key] = value;
+            await utils.promisify(chrome.storage.local, 'set')(bin);
+        },
+        removeItem: async function (key) {
+            await utils.promisify(chrome.storage.local, 'remove')(key);
+        }
+    }
+};
+const storages = {
+    sessionStorage: {
+        mutex: {
+            MUTEX_KEY: 'MyWebGuard_Mutex',
+            unlock: function () {
+                window.sessionStorage.removeItem(this.MUTEX_KEY);
+            }
+        },
+        DATA_KEY: 'MyWebGuard_Data',
+        getCodeOriginList: function () {
+            const json = window.sessionStorage.getItem(this.DATA_KEY);
+            return json == null ? [topOrigin,] : JSON.parse(json);
+        }
+    },
+    chromeLocal: {
+        mutex: {
+            MUTEX_KEY: 'mutex:' + topOrigin,
+            MUTEX_VALUE: '1',
+            lock: async function () {
+                let mutex;
+                while (true) {
+                    mutex = await apis.chromeStorage.getItem(this.MUTEX_KEY);
+                    if (mutex != this.MUTEX_VALUE)
+                        break;
+                    await utils.sleep(20);
+                }
+                await apis.chromeStorage.setItem(this.MUTEX_KEY, this.MUTEX_VALUE);
+            },
+            unlock: async function () {
+                await apis.chromeStorage.removeItem(this.MUTEX_KEY);
+            }
+        },
+        RULES_KEY: 'rules:' + topOrigin,
+        getRules: async function () {
+            const json = await apis.chromeStorage.getItem(this.RULES_KEY);
+            return json == null ? utils.getDefaultRules() : JSON.parse(json);
+        },
+        addOriginRule: async function (origin, isBLocked) {
+            await this.mutex.lock();
+            let rules = await this.getRules();
+            rules.origins[origin] = isBLocked;
+            const json = JSON.stringify(rules);
+            await apis.chromeStorage.setItem(this.RULES_KEY, json);
+            await this.mutex.unlock();
+        },
+    },
+};
 
 (async () => {
-    Error.stackTraceLimit = Infinity;
-    // console.log('INJECTED:', location.href);
+    if (isTopFrame) {
+        storages.sessionStorage.mutex.unlock();
+        await storages.chromeLocal.mutex.unlock();
+    }
 
-    let json = JSON.stringify({});
+    const rules = await storages.chromeLocal.getRules();
+    // const rules = {
+    //     origins: {
+    //         'https://static.xx.fbcdn.net': true,
+    //         'https://tiki.vn': false,
+    //         'https://frontend.tikicdn.com': false,
+    //         'https://trackity.tiki.vn': false
+    //     }
+    // };
 
+    if (isTopFrame) {
+        utils.printVerbose('Rules.origins:', rules.origins);
+    }
+
+    let json = JSON.stringify(rules);
     const injectScript = document.createElement('script');
-    injectScript.innerHTML = 'Error.stackTraceLimit = Infinity;' +
-        '(' + myWebGuard.toString() + ')();';
     let rawCode = '(' + myWebGuard.toString() + ')();';
-    rawCode = rawCode.replace('JSON_RULES', window.btoa(json));
-    injectScript.innerHTML = rawCode;
+    injectScript.innerHTML = rawCode.replace('JSON_RULES', window.btoa(json));
     document.documentElement.insertBefore(injectScript, document.documentElement.childNodes[0]);
 })();
+
+if (isTopFrame) {
+    (async () => {
+        utils.printVerbose('Service is running in', location.href);
+        while (true) {
+            await utils.sleep(300);
+            const codeOriginList = storages.sessionStorage.getCodeOriginList();
+            const rules = await storages.chromeLocal.getRules();
+            for (let i = 0; i < codeOriginList.length; i++) {
+                const origin = codeOriginList[i];
+                if (!(origin in rules.origins)) {
+                    await storages.chromeLocal.addOriginRule(origin, true);
+                }
+            }
+        }
+    })();
+}
