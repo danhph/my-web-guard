@@ -4,18 +4,25 @@ let isTopFrame
 let isInIFrame
 let topOrigin
 try {
-  topOrigin = window.top.origin
+  topOrigin = new URL(window.top.origin).hostname
   isTopFrame = window === window.top
   isInIFrame = false
 } catch {
+  topOrigin = new URL(window.origin).hostname
   isTopFrame = false
   isInIFrame = true
-  topOrigin = window.origin
 }
 let cache = {}
 const utils = {
   printVerbose: function () {
     console.log('[MyWebGuard]', ...arguments)
+  },
+  getOrigin: function (url) {
+    try {
+      return new URL(url).hostname
+    } catch {
+      return null
+    }
   },
   sleep: function (ms) {
     const start = new Date()
@@ -130,14 +137,6 @@ const storage = {
     storage.sessionStorage.mutex.unlock()
     await storage.chromeLocal.mutex.unlock(topOrigin)
     const rules = await storage.chromeLocal.getRules()
-    // const rules = {
-    //     origins: {
-    //         'https://static.xx.fbcdn.net': true,
-    //         'https://tiki.vn': false,
-    //         'https://frontend.tikicdn.com': false,
-    //         'https://trackity.tiki.vn': false
-    //     }
-    // };
     let json = JSON.stringify(rules)
     const injectScript = document.createElement('script')
     let rawCode = '(' + myWebGuard.toString() + ')();'
@@ -152,7 +151,7 @@ if (isTopFrame) {
     utils.printVerbose('Service is running in', location.href)
     while (true) {
       await utils.sleepAsync(300)
-      // utils.printVerbose('Service is running in', location.href);
+
       try {
         const codeOriginList = storage.sessionStorage.getChangedCodeOriginList()
         if (codeOriginList === null)

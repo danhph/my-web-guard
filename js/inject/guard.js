@@ -23,17 +23,31 @@ function myWebGuard () {
       console.log('[MyWebGuard]', ...arguments)
     },
     getTopOrigin: function () {
+      let url
       try {
-        return builtins.window.top.origin
+        url = builtins.window.top.origin
       } catch {
-        return builtins.window.origin
+        url = builtins.window.origin
+      }
+      return this.getOrigin(url)
+    },
+    getOrigin: function (url) {
+      try {
+        return new builtins.URL(url).hostname
+      } catch {
+        return null
       }
     },
-    isCrossOrigin: function (url) {
+    isCrossOrigin: function (origin) {
       try {
-        const topOrigin = utils.getTopOrigin()
-        const origin = new builtins.URL(url).origin
-        return topOrigin !== origin
+        return this.getTopOrigin() !== origin
+      } catch {
+        return false
+      }
+    },
+    isUrlCrossOrigin: function (url) {
+      try {
+        return this.getTopOrigin() !== this.getOrigin(url)
       } catch {
         return false
       }
@@ -158,17 +172,14 @@ function myWebGuard () {
     getCodeOrigin: function () {
       const urls = new builtins.Error().stack.match(/https?:\/\/[^:]+/g)
       if (urls != null) {
-        const origin = new builtins.URL(urls[urls.length - 1]).origin
+        const origin = utils.getOrigin(urls[urls.length - 1])
         storage.sessionStorage.addCodeOrigin(origin)
         return origin
       }
       return undefined
     },
-    isOriginBlocked: function (url) {
+    isOriginBlocked: function (origin) {
       try {
-        const origin = new builtins.URL(url).origin
-        if (!utils.isCrossOrigin(origin))
-          return false
         if (origin in rules.origins)
           return rules.origins[origin]
         return true
@@ -184,7 +195,7 @@ function myWebGuard () {
   monitor.property(HTMLImageElement.prototype, 'src', {
     set: function (obj, args, proceed) {
       const val = args[0]
-      if (!utils.isCrossOrigin(val))
+      if (!utils.isUrlCrossOrigin(val))
         return proceed()
 
       const codeOrigin = monitor.getCodeOrigin()
@@ -197,7 +208,7 @@ function myWebGuard () {
   monitor.property(HTMLScriptElement.prototype, 'src', {
     set: function (obj, args, proceed) {
       const val = args[0]
-      if (!utils.isCrossOrigin(val))
+      if (!utils.isUrlCrossOrigin(val))
         return proceed()
 
       const codeOrigin = monitor.getCodeOrigin()
@@ -222,7 +233,7 @@ function myWebGuard () {
       try {
         const key = args[0].toString()
         const val = args[1].toString()
-        if (key.toLowerCase() === 'src' && utils.isCrossOrigin(val)) {
+        if (key.toLowerCase() === 'src' && utils.isUrlCrossOrigin(val)) {
           const codeOrigin = monitor.getCodeOrigin()
           if (monitor.isOriginBlocked(codeOrigin)) {
             block = true
