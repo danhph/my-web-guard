@@ -1,5 +1,5 @@
 {
-    "name": "MyWebGuard",
+    "name": "My Web Guard",
     "short_name": "MyWebGuard",
     "description": "A Self-Protecting Tool for Web Users",
     "author": "Intelligent Systems Security Lab - CS - UDayton",
@@ -20,6 +20,10 @@
             "run_at": "document_start"
         }
     ],
+    "browser_action": {
+        "default_popup": "popup.html",
+        "default_title": "My Web Guard"
+      },
     "content_security_policy": "script-src 'self'; object-src 'self'",
     "permissions": [
         "tabs",
